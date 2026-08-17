@@ -83,6 +83,36 @@ h1{
 .tab-btn.active{color:var(--cyan);border-bottom-color:var(--cyan);}
 .tab-btn.active .n{color:var(--cyan);opacity:0.55;}
 .tab-btn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;}
+.tab-divider{width:1px;align-self:stretch;background:var(--line);margin:8px 6px;}
+
+/* session lanes (Demo 2) */
+.lane-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding-bottom:6px;}
+@media (max-width:600px){.lane-grid{grid-template-columns:1fr;}}
+.lane{background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:14px;}
+.lane-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;}
+.lane-title{font-family:var(--font-mono);font-size:12px;color:var(--cyan);}
+.lane-balance{font-family:var(--font-mono);font-size:19px;font-weight:600;}
+.queue-list{min-height:40px;}
+.queue-chip{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px;font-family:var(--font-mono);font-size:12px;}
+.queue-chip .seq{color:var(--text-muted);margin-right:8px;}
+.queue-chip.processed{opacity:0.4;text-decoration:line-through;}
+.queue-empty{color:var(--text-muted);font-size:11.5px;text-align:center;padding:12px 0;}
+.lane-note{font-size:11px;color:var(--text-muted);margin-top:10px;border-top:1px solid var(--line-soft);padding-top:8px;line-height:1.55;}
+.lane-controls{display:flex;justify-content:flex-end;margin-top:10px;}
+
+/* instruction form (Demo 2) */
+.form-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;}
+.form-row label{font-size:12px;color:var(--text-muted);}
+select.field, input.field{
+  font-family:var(--font-mono);
+  font-size:12.5px;
+  background:var(--panel-2);
+  border:1px solid var(--line);
+  color:var(--text);
+  border-radius:7px;
+  padding:7px 10px;
+}
+select.field:focus-visible, input.field:focus-visible{outline:2px solid var(--cyan);outline-offset:1px;}
 
 /* stage */
 .stage{
@@ -279,13 +309,16 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 <div class="app">
   <p class="eyebrow">Interactive walkthrough · Service bus mechanics</p>
   <h1>How a service bus actually works</h1>
-  <p class="subtitle">Click through the four stages below. Each one builds on the last — from why we bother, to how a message moves, to what happens when a consumer breaks.</p>
+  <p class="subtitle">Part 1 builds the mechanics from first principles. Part 2 traces one real payment instruction through the exact same features, end to end.</p>
 
   <div class="tabs" role="tablist">
     <button class="tab-btn active" data-tab="why"><span class="n">01</span>Why</button>
     <button class="tab-btn" data-tab="move"><span class="n">02</span>How it moves</button>
     <button class="tab-btn" data-tab="fail"><span class="n">03</span>When it fails</button>
-    <button class="tab-btn" data-tab="azure"><span class="n">04</span>Meet Azure Service Bus</button>
+    <span class="tab-divider" aria-hidden="true"></span>
+    <button class="tab-btn" data-tab="submit"><span class="n">04</span>Submit an instruction</button>
+    <button class="tab-btn" data-tab="sessions"><span class="n">05</span>Same-account ordering</button>
+    <button class="tab-btn" data-tab="compliance"><span class="n">06</span>When compliance fails</button>
   </div>
 
   <div class="stage">
@@ -300,6 +333,17 @@ const CX = 400, CY = 200, RING_R = 148, NODE_R = 30, HUB_R = 40;
 const DLQ = {x:400, y:412};
 const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+/* ---- Demo 2 layout: Client -> Topic -> 3 subscriptions ---- */
+const CLIENT = {x:90, y:230};
+const BUS2 = {x:380, y:230};
+const SUBS = [
+  {key:'compliance', name:'Compliance', full:'Compliance / Fraud Subscription', x:680, y:90},
+  {key:'ledger',      name:'Ledger',      full:'Ledger Subscription (session-aware)', x:680, y:230},
+  {key:'notify',      name:'Notifications', full:'Notifications Subscription', x:680, y:370},
+];
+const DLQ2 = {x:380, y:460};
+const THRESHOLD = 10000;
+
 const SERVICES8 = ['Payments','Orders','Inventory','Notify','Ledger','Fraud Chk','Shipping','Audit'];
 const SERVICES5 = ['Payments','Orders','Inventory','Notify','Ledger'];
 const FULL5 = ['Payments API','Orders Service','Inventory Service','Notifications Service','Ledger Service'];
@@ -312,7 +356,27 @@ const state = {
   mode1:'p2p', count1:5,
   busMode2:'bus', deliveryMode2:'broadcast', msgTag:'standard', producer:0, rr:0,
   unhealthy:new Set(), dlqMessages:[], dlqView:false,
+  // demo 2
+  account:'ACC-1044', amount:2500,
+  outage:false, dlq2Messages:[], dlq2View:false,
+  lanes:null,
 };
+
+function freshLanes(){
+  return {
+    'ACC-1044': { balance:0, queue:[
+      {seq:1,label:'Deposit',amount:1000},
+      {seq:2,label:'Withdrawal',amount:-500},
+      {seq:3,label:'Withdrawal',amount:-200},
+    ]},
+    'ACC-2210': { balance:0, queue:[
+      {seq:1,label:'Deposit',amount:2000},
+      {seq:2,label:'Transfer out',amount:-1500},
+      {seq:3,label:'Deposit',amount:300},
+    ]},
+  };
+}
+state.lanes = freshLanes();
 
 const canvasPanel = document.getElementById('canvasPanel');
 const logPanel = document.getElementById('logPanel');
@@ -723,6 +787,305 @@ function retryChain(target, idx, attempt){
   });
 }
 
+/* =====================================================================
+   DEMO 2 — the financial instruction walkthrough
+   ===================================================================== */
+
+function fmtMoney(n){
+  const sign = n<0 ? '-' : '';
+  return sign + '$' + Math.abs(n).toLocaleString('en-US');
+}
+
+/* shared flow topology: Client -> Topic -> {Compliance, Ledger, Notifications} */
+function buildFlowSvg(showDlq, showFilterChip){
+  let lines = `<line class="conn-line" x1="${CLIENT.x}" y1="${CLIENT.y}" x2="${BUS2.x}" y2="${BUS2.y}"/>`;
+  SUBS.forEach(s=>{ lines += `<line class="conn-line" x1="${BUS2.x}" y1="${BUS2.y}" x2="${s.x}" y2="${s.y}"/>`; });
+
+  const clientNode = `
+    <g class="node-group">
+      <circle class="node-circle" cx="${CLIENT.x}" cy="${CLIENT.y}" r="${NODE_R}"><title>Client / Instruction API</title></circle>
+      <text class="node-label" x="${CLIENT.x}" y="${CLIENT.y+NODE_R+16}">Client</text>
+    </g>`;
+  const busNode = `
+    <circle class="hub-circle" cx="${BUS2.x}" cy="${BUS2.y}" r="${HUB_R}"/>
+    <text class="hub-label" x="${BUS2.x}" y="${BUS2.y-3}">TOPIC</text>
+    <text class="hub-label" x="${BUS2.x}" y="${BUS2.y+11}" style="font-size:8px;opacity:0.85;">payment-instructions</text>`;
+  const subNodes = SUBS.map(s=>{
+    const chip = (showFilterChip && s.key==='compliance')
+      ? `<text class="filter-chip" x="${s.x}" y="${s.y+NODE_R+30}">#amount &gt; $${THRESHOLD.toLocaleString('en-US')}</text>` : '';
+    return `
+    <g class="node-group">
+      <circle class="node-circle" data-key="${s.key}" cx="${s.x}" cy="${s.y}" r="${NODE_R}"><title>${s.full}</title></circle>
+      <text class="node-label" x="${s.x}" y="${s.y+NODE_R+16}">${s.name}</text>
+      ${chip}
+    </g>`;
+  }).join('');
+  const dlqCount = state.dlq2Messages.length;
+  const dlq = showDlq ? `
+    <g id="dlqGroup2" style="cursor:pointer;">
+      <rect class="dlq-rect" x="${DLQ2.x-85}" y="${DLQ2.y-22}" width="170" height="44" rx="8"/>
+      <text class="dlq-label" x="${DLQ2.x}" y="${DLQ2.y-2}">Dead-letter queue</text>
+      <text class="dlq-count" id="dlqCount2Text" x="${DLQ2.x}" y="${DLQ2.y+14}">${dlqCount} message${dlqCount===1?'':'s'} · click to review</text>
+    </g>` : '';
+
+  return `<svg viewBox="0 0 820 520" role="img" aria-label="Payment instruction flow">
+      <g>${lines}</g>
+      ${busNode}
+      ${clientNode}
+      ${subNodes}
+      <g id="dotLayer">${dlq}</g>
+    </svg>`;
+}
+
+/* ---------- tab 05: SUBMIT AN INSTRUCTION ---------- */
+function renderSubmit(){
+  canvasPanel.innerHTML = `
+    <div class="legend">
+      <span><span class="dot" style="background:var(--cyan)"></span>delivered</span>
+      <span><span class="dot" style="background:var(--amber)"></span>flagged for review</span>
+    </div>
+    ${buildFlowSvg(false, true)}
+    <div class="controls" style="flex-direction:column;align-items:stretch;">
+      <div class="form-row">
+        <label for="acctSel">Account</label>
+        <select class="field" id="acctSel">
+          <option value="ACC-1044" ${state.account==='ACC-1044'?'selected':''}>ACC-1044</option>
+          <option value="ACC-2210" ${state.account==='ACC-2210'?'selected':''}>ACC-2210</option>
+          <option value="ACC-3399" ${state.account==='ACC-3399'?'selected':''}>ACC-3399</option>
+        </select>
+        <label for="amtField" style="margin-left:8px;">Amount</label>
+        <input class="field" id="amtField" type="number" min="1" step="1" value="${state.amount}" style="width:110px;">
+        <button class="btn ghost" id="presetStd">Standard example</button>
+        <button class="btn ghost" id="presetHigh">High-value example</button>
+      </div>
+      <div class="form-row">
+        <button class="btn primary" id="submitInstr">Submit instruction</button>
+        <span class="hint">Compliance review triggers automatically above $${THRESHOLD.toLocaleString('en-US')}</span>
+      </div>
+    </div>`;
+  dotLayer = canvasPanel.querySelector('#dotLayer');
+
+  canvasPanel.querySelector('#acctSel').onchange = (e)=>{ state.account = e.target.value; };
+  canvasPanel.querySelector('#amtField').onchange = (e)=>{ state.amount = Number(e.target.value)||0; };
+  canvasPanel.querySelector('#presetStd').onclick = ()=>{ state.amount=2500; canvasPanel.querySelector('#amtField').value=2500; };
+  canvasPanel.querySelector('#presetHigh').onclick = ()=>{ state.amount=25000; canvasPanel.querySelector('#amtField').value=25000; };
+  canvasPanel.querySelector('#submitInstr').onclick = sendInstruction;
+
+  clearLog();
+  state.tab='submit';
+}
+function sendInstruction(){
+  const amount = state.amount, account = state.account;
+  if (!amount || amount<=0){ log(`<span class="log-err">Enter an amount greater than zero.</span>`); return; }
+  log(`<strong>Client</strong> → Topic: payment-instructions <span class="log-dim">[account: ${account}, amount: ${fmtMoney(amount)}]</span>`);
+  spawnDot(CLIENT.x,CLIENT.y,BUS2.x,BUS2.y,450,'var(--cyan)', ()=>{
+    const ledger = SUBS.find(s=>s.key==='ledger');
+    const notify = SUBS.find(s=>s.key==='notify');
+    const compliance = SUBS.find(s=>s.key==='compliance');
+
+    spawnDot(BUS2.x,BUS2.y,ledger.x,ledger.y,450,'var(--cyan)', ()=>{
+      log(`bus → ledger-subscription <span class="log-ok">delivered</span> <span class="log-dim">(session: ${account})</span>`);
+    });
+    spawnDot(BUS2.x,BUS2.y,notify.x,notify.y,450,'var(--cyan)', ()=>{
+      log(`bus → notifications-subscription <span class="log-ok">delivered</span>`);
+    });
+    if (amount > THRESHOLD){
+      spawnDot(BUS2.x,BUS2.y,compliance.x,compliance.y,450,'var(--amber)', ()=>{
+        log(`bus → compliance-subscription <span class="log-warn">flagged for manual review</span> <span class="log-dim">(matched SqlFilter: amount &gt; ${THRESHOLD})</span>`);
+      });
+    } else {
+      log(`bus → compliance-subscription <span class="log-dim">skipped — below review threshold, auto-cleared</span>`);
+    }
+  });
+}
+
+/* ---------- tab 06: SAME-ACCOUNT ORDERING (SESSIONS) ---------- */
+function renderSessions(){
+  const accts = Object.keys(state.lanes);
+  const laneHtml = accts.map(acct=>{
+    const lane = state.lanes[acct];
+    const rows = lane.queue.length
+      ? lane.queue.map(m=>`
+        <div class="queue-chip">
+          <span><span class="seq">#${m.seq}</span>${m.label}</span>
+          <span style="color:${m.amount<0?'var(--red)':'var(--cyan)'}">${fmtMoney(m.amount)}</span>
+        </div>`).join('')
+      : `<div class="queue-empty">Queue empty — all processed in order.</div>`;
+    return `
+    <div class="lane">
+      <div class="lane-header">
+        <span class="lane-title">Session: ${acct}</span>
+        <span class="lane-balance">${fmtMoney(lane.balance)}</span>
+      </div>
+      <div class="queue-list">${rows}</div>
+      <div class="lane-controls">
+        <button class="btn primary small" data-acct="${acct}" ${lane.queue.length===0?'disabled':''}>Process next →</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  canvasPanel.innerHTML = `
+    <p class="hint" style="margin:0 0 4px;">The Ledger subscription is session-aware, keyed by account ID. Each lane below only ever processes its own account's messages, strictly in the order they were sent — regardless of what's happening in the other lane.</p>
+    <div class="lane-grid">${laneHtml}</div>
+    <div class="lane-note">Why this matters: without session ordering, a withdrawal could be picked up before the deposit it depends on arrives. Sessions guarantee that can never happen — each account's instructions are locked to one consumer, processed one at a time, in order.</div>
+    <div class="controls">
+      <button class="btn ghost" id="resetLanes" style="margin-left:auto;">Reset both accounts</button>
+    </div>`;
+
+  canvasPanel.querySelectorAll('[data-acct]').forEach(b=>{
+    b.onclick = ()=>processNext(b.dataset.acct);
+  });
+  canvasPanel.querySelector('#resetLanes').onclick = ()=>{
+    state.lanes = freshLanes();
+    clearLog();
+    renderSessions();
+  };
+  if (!logPanel.querySelector('.log-line')) clearLog();
+  state.tab='sessions';
+}
+function processNext(acct){
+  const lane = state.lanes[acct];
+  if (!lane.queue.length) return;
+  const m = lane.queue.shift();
+  lane.balance += m.amount;
+  log(`ledger-subscription <span class="log-dim">(session: ${acct})</span> processed <strong>#${m.seq} ${m.label}</strong> ${fmtMoney(m.amount)} → running balance <span class="log-ok">${fmtMoney(lane.balance)}</span>`);
+  renderSessions();
+}
+
+/* ---------- tab 07: WHEN COMPLIANCE FAILS ---------- */
+function renderCompliance(){
+  if (state.dlq2View){ renderDlq2Inspector(); return; }
+  canvasPanel.innerHTML = `
+    <div class="legend">
+      <span><span class="dot" style="background:var(--cyan)"></span>delivered</span>
+      <span><span class="dot" style="background:var(--amber)"></span>retry attempt</span>
+      <span><span class="dot" style="background:var(--red)"></span>dead-lettered</span>
+    </div>
+    ${buildFlowSvg(true, true)}
+    <div class="controls">
+      <span class="hint">Compliance screening</span>
+      <div class="seg">
+        <button data-outage="off" class="${!state.outage?'active':''}">Healthy</button>
+        <button data-outage="on" class="${state.outage?'active':''}">Simulate outage</button>
+      </div>
+      <button class="btn primary" id="sendHighValue" style="margin-left:auto;">Send high-value instruction</button>
+      <button class="btn ghost" id="reviewDlq2Btn" ${state.dlq2Messages.length===0?'disabled':''}>Review failed messages (${state.dlq2Messages.length})</button>
+      <button class="btn ghost" id="resetCompliance">Reset</button>
+    </div>`;
+  dotLayer = canvasPanel.querySelector('#dotLayer');
+
+  canvasPanel.querySelectorAll('[data-outage]').forEach(b=>{
+    b.onclick = ()=>{ state.outage = (b.dataset.outage==='on'); renderCompliance(); };
+  });
+  canvasPanel.querySelector('#sendHighValue').onclick = sendComplianceCheck;
+  const dlqGroup = canvasPanel.querySelector('#dlqGroup2');
+  if (dlqGroup) dlqGroup.onclick = ()=>{ state.dlq2View=true; renderCompliance(); };
+  const reviewBtn = canvasPanel.querySelector('#reviewDlq2Btn');
+  if (reviewBtn) reviewBtn.onclick = ()=>{ state.dlq2View=true; renderCompliance(); };
+  canvasPanel.querySelector('#resetCompliance').onclick = ()=>{
+    state.outage=false; state.dlq2Messages=[]; state.dlq2View=false; clearLog(); renderCompliance();
+  };
+  clearLog();
+}
+function sendComplianceCheck(){
+  if (state.dlq2View){ return; }
+  const account = state.account, amount = 25000;
+  const ledger = SUBS.find(s=>s.key==='ledger');
+  const notify = SUBS.find(s=>s.key==='notify');
+  const compliance = SUBS.find(s=>s.key==='compliance');
+
+  log(`<strong>Client</strong> → Topic: payment-instructions <span class="log-dim">[account: ${account}, amount: ${fmtMoney(amount)}]</span>`);
+  spawnDot(CLIENT.x,CLIENT.y,BUS2.x,BUS2.y,450,'var(--cyan)', ()=>{
+    spawnDot(BUS2.x,BUS2.y,ledger.x,ledger.y,450,'var(--cyan)', ()=>{
+      log(`bus → ledger-subscription <span class="log-ok">delivered</span> <span class="log-dim">— unaffected by compliance status</span>`);
+    });
+    spawnDot(BUS2.x,BUS2.y,notify.x,notify.y,450,'var(--cyan)', ()=>{
+      log(`bus → notifications-subscription <span class="log-ok">delivered</span>`);
+    });
+    if (!state.outage){
+      spawnDot(BUS2.x,BUS2.y,compliance.x,compliance.y,450,'var(--amber)', ()=>{
+        log(`bus → compliance-subscription <span class="log-warn">flagged for manual review</span> <span class="log-dim">(matched SqlFilter: amount &gt; ${THRESHOLD})</span>`);
+      });
+    } else {
+      complianceRetry(account, amount, compliance, 1);
+    }
+  });
+}
+function complianceRetry(account, amount, compliance, attempt){
+  spawnDot(BUS2.x,BUS2.y,compliance.x,compliance.y,380,'var(--amber)', ()=>{
+    log(`bus → compliance-subscription delivery attempt ${attempt}/3 <span class="log-warn">failed — screening service unavailable</span>`);
+    if (attempt<3){
+      setTimeout(()=>complianceRetry(account, amount, compliance, attempt+1), 260);
+    } else {
+      setTimeout(()=>{
+        spawnDot(BUS2.x,BUS2.y,DLQ2.x,DLQ2.y,480,'var(--red)', ()=>{
+          log(`Instruction [${account}, ${fmtMoney(amount)}]: max delivery count exceeded → moved to <span class="log-err">dead-letter queue</span>`);
+          state.dlq2Messages.push({id:++dlqIdCounter, account, amount, time:fmtTime(), reason:'Compliance screening service unavailable after 3 attempts'});
+          const n = state.dlq2Messages.length;
+          const el = canvasPanel.querySelector('#dlqCount2Text');
+          if (el) el.textContent = `${n} message${n===1?'':'s'} · click to review`;
+          const btn = canvasPanel.querySelector('#reviewDlq2Btn');
+          if (btn){ btn.textContent = `Review failed messages (${n})`; btn.disabled = n===0; }
+        });
+      },260);
+    }
+  });
+}
+function renderDlq2Inspector(){
+  const msgs = state.dlq2Messages;
+  const rows = msgs.length ? msgs.map(m=>`
+    <div class="dlq-row">
+      <div class="dlq-row-main">
+        <div class="dlq-row-title">${m.account} · ${fmtMoney(m.amount)} <span class="log-time">${m.time}</span></div>
+        <div class="dlq-row-reason">${m.reason}${state.outage ? ' <span class="log-warn">· screening still unavailable</span>' : ' <span class="log-ok">· screening healthy</span>'}</div>
+      </div>
+      <div class="dlq-row-actions">
+        <button class="btn ghost small" data-action2="retry" data-id="${m.id}">Retry now</button>
+        <button class="btn ghost small" data-action2="discard" data-id="${m.id}">Discard</button>
+      </div>
+    </div>`).join('') : `<div class="log-empty" style="padding:34px 0;text-align:center;">No dead-lettered instructions right now.</div>`;
+
+  canvasPanel.innerHTML = `
+    <div class="dlq-header">
+      <button class="btn ghost" id="backToFlow">← Back to diagram</button>
+      <span class="dlq-title">Compliance dead-letter queue — ${msgs.length} message${msgs.length===1?'':'s'}</span>
+    </div>
+    <div class="dlq-list">${rows}</div>
+    ${msgs.length ? `<div class="controls">
+       <button class="btn ghost" id="retryAll2">Retry all</button>
+       <button class="btn ghost" id="discardAll2">Discard all</button>
+    </div>` : ''}`;
+
+  canvasPanel.querySelector('#backToFlow').onclick = ()=>{ state.dlq2View=false; renderCompliance(); };
+  canvasPanel.querySelectorAll('[data-action2]').forEach(b=>{
+    b.onclick = ()=>handleDlq2Action(Number(b.dataset.id), b.dataset.action2);
+  });
+  const retryAllBtn = canvasPanel.querySelector('#retryAll2');
+  if (retryAllBtn) retryAllBtn.onclick = ()=>{ [...state.dlq2Messages].forEach(m=>handleDlq2Action(m.id,'retry')); };
+  const discardAllBtn = canvasPanel.querySelector('#discardAll2');
+  if (discardAllBtn) discardAllBtn.onclick = ()=>{
+    if (state.dlq2Messages.length) log(`${state.dlq2Messages.length} dead-lettered instruction(s) <span class="log-dim">discarded by operator</span>`);
+    state.dlq2Messages=[]; renderDlq2Inspector();
+  };
+}
+function handleDlq2Action(id, action){
+  const idx = state.dlq2Messages.findIndex(m=>m.id===id);
+  if (idx===-1) return;
+  const m = state.dlq2Messages[idx];
+  if (action==='discard'){
+    state.dlq2Messages.splice(idx,1);
+    log(`${m.account} · ${fmtMoney(m.amount)}: dead-lettered instruction <span class="log-dim">discarded by operator</span>`);
+  } else {
+    if (state.outage){
+      log(`${m.account} · ${fmtMoney(m.amount)}: retry attempted — screening <span class="log-warn">still unavailable</span>, remains in dead-letter queue`);
+    } else {
+      state.dlq2Messages.splice(idx,1);
+      log(`${m.account} · ${fmtMoney(m.amount)}: <span class="log-ok">redelivered successfully</span> — compliance review resolved`);
+    }
+  }
+  renderDlq2Inspector();
+}
+
 /* ---------- tab: AZURE ---------- */
 function renderAzure(){
   canvasPanel.innerHTML = `
@@ -743,7 +1106,7 @@ function renderAzure(){
         <p>Built in natively — set MaxDeliveryCount per queue/subscription, and Azure Service Bus handles the retries and dead-lettering for you automatically.</p>
       </div>
       <div class="azure-card">
-        <div class="from">New — not shown yet</div>
+        <div class="from">Coming up next</div>
         <div class="to">Sessions</div>
         <p>Messages sharing a SessionId (e.g. one account ID) are processed strictly in order, one at a time — critical for anything where sequence matters.</p>
       </div>
@@ -768,6 +1131,9 @@ document.querySelectorAll('.tab-btn').forEach(btn=>{
     else if (t==='move') renderMove();
     else if (t==='fail') renderFail();
     else if (t==='azure') renderAzure();
+    else if (t==='submit') renderSubmit();
+    else if (t==='sessions') renderSessions();
+    else if (t==='compliance') (state.dlq2View ? renderDlq2Inspector() : renderCompliance());
   });
 });
 
